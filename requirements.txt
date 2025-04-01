@@ -1,0 +1,10 @@
+torch
+transformers
+datasets
+evaluate
+peft
+tqdm
+wandb
+sacrebleu
+scikit-learn
+gradio
