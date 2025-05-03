@@ -13,6 +13,10 @@ from sklearn.metrics import confusion_matrix
 
 from tools import TimeCounter, AvgRecorder
 
+"""
+准确率 45.60%
+"""
+
 
 class MovieLensDataset(Dataset):
     def __init__(self, data_path):

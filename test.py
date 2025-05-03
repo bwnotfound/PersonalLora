@@ -1,56 +1,56 @@
-import torch.nn as nn
-from accelerate import Accelerator
+# import torch.nn as nn
+# from accelerate import Accelerator
 
 
-class Net(nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.linear1 = nn.Linear(10, 10)
-        self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(10, 1)
+# class Net(nn.Module):
+#     def __init__(self):
+#         super(Net, self).__init__()
+#         self.linear1 = nn.Linear(10, 10)
+#         self.relu = nn.ReLU()
+#         self.linear2 = nn.Linear(10, 1)
 
-    def forward(self, x):
-        x = self.linear1(x)
-        x = self.relu(x)
-        x = self.linear2(x)
-        return x
+#     def forward(self, x):
+#         x = self.linear1(x)
+#         x = self.relu(x)
+#         x = self.linear2(x)
+#         return x
 
-    def prepare_inputs_for_generation(self):
-        pass
+#     def prepare_inputs_for_generation(self):
+#         pass
 
 
-net = Net()
+# net = Net()
 
-from peft import LoraConfig, get_peft_model
+# from peft import LoraConfig, get_peft_model
 
-peft_config = LoraConfig(
-    r=8,
-    lora_alpha=32,
-    target_modules=["linear1", "linear2"],
-    lora_dropout=0.1,
-    task_type="CAUSAL_LM",
-)
+# peft_config = LoraConfig(
+#     r=8,
+#     lora_alpha=32,
+#     target_modules=["linear1", "linear2"],
+#     lora_dropout=0.1,
+#     task_type="CAUSAL_LM",
+# )
 
-from module.lora import LoraLinear
-import torch.nn as nn
+# from module.lora import LoraLinear
+# import torch.nn as nn
 
-custom_module_mapping = {nn.Linear: LoraLinear}
-peft_config._register_custom_module(custom_module_mapping)
+# custom_module_mapping = {nn.Linear: LoraLinear}
+# peft_config._register_custom_module(custom_module_mapping)
 
-net = get_peft_model(net, peft_config)
+# net = get_peft_model(net, peft_config)
 
-accelerator = Accelerator()
-new_net = accelerator.prepare(net)
-for name, param in new_net.named_modules():
-    param.bw = "test"
+# accelerator = Accelerator()
+# new_net = accelerator.prepare(net)
+# for name, param in new_net.named_modules():
+#     param.bw = "test"
 
-for name, param in net.named_modules():
-    print(name)
-    if hasattr(param, "bw"):
-        print(param.bw)
-    else:
-        print("no bw")
-exit()
+# for name, param in net.named_modules():
+#     print(name)
+#     if hasattr(param, "bw"):
+#         print(param.bw)
+#     else:
+#         print("no bw")
+# exit()
 
 import os
 
@@ -91,9 +91,12 @@ input_text = (
 )
 input_ids = tokenizer(input_text, return_tensors="pt").to(device)
 # Generate text
+for name, module in model.named_modules():
+    if isinstance(module, LoraLinear):
+        module.set_indices([0], [0])
 output = model.generate(
     **input_ids,
-    max_new_tokens=256,
+    max_new_tokens=16,
     do_sample=True,
     top_k=50,
     top_p=0.95,
@@ -102,3 +105,16 @@ output = model.generate(
 # Decode the generated text
 output_text = tokenizer.decode(output[0], skip_special_tokens=True)
 print(output_text)
+
+# import torch
+# import torch.nn as nn
+
+# l = nn.ModuleList([nn.Linear(10, 10), nn.Linear(10, 10)])
+# x = torch.randn(2, 10)
+# weight = torch.stack([m.weight for m in l])
+# bias = torch.stack([m.bias for m in l])
+# result = torch.bmm(weight, x.unsqueeze(-1)).squeeze(-1) + bias
+# result.sum().backward()
+# print(result.shape)
+# print(result)
+# print(l[0].weight.grad)

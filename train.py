@@ -12,6 +12,7 @@ from utils import (
     DataCollatorForMovielensTextLM,
     MovielensTextFormat,
     MovieLensAccuracy,
+    preprocess_logits_for_metrics,
 )
 from module.lora import LoraLinear
 from datasets.download import DownloadMode
@@ -22,10 +23,11 @@ class CustomTrainer(Trainer):
         self, model, inputs, return_outputs=False, num_items_in_batch=None
     ):
         labels = inputs.pop("labels")
-        user_indices = inputs.pop("user_indices")
-        assert (
-            user_indices.size(0) == 1
-        ), f"目前只支持每batch单用户训练, {user_indices.shape}"
+        user_indices = inputs.pop("user_indices").squeeze().tolist()
+        item_indices = inputs.pop("item_indices").squeeze().tolist()
+        # assert (
+        #     user_indices.size(0) == 1
+        # ), f"目前只支持每batch单用户训练, {user_indices.shape}"
         if self.model_accepts_loss_kwargs:
             loss_kwargs = {}
             if num_items_in_batch is not None:
@@ -33,8 +35,7 @@ class CustomTrainer(Trainer):
             inputs = {**inputs, **loss_kwargs}
         for name, module in model.named_modules():
             if isinstance(module, LoraLinear):
-                if hasattr(module, "set_user_index"):
-                    module.set_user_index(user_indices.squeeze().item())
+                module.set_indices(user_indices, item_indices)
         outputs = model(**inputs)
 
         logits = outputs.logits
@@ -74,18 +75,20 @@ def train_model(
     config = {
         "output_dir": output_dir,
         "num_train_epochs": 4,
-        "per_device_train_batch_size": 1,
-        "per_device_eval_batch_size": 1,
+        "per_device_train_batch_size": 128,
+        "per_device_eval_batch_size": 256,
         "logging_strategy": "steps",
         "logging_dir": "logs",
         "logging_steps": 1,
-        "save_steps": 100,
-        "eval_steps": 300,
-        "eval_strategy": "no",
-        "save_total_limit": 3,
-        "learning_rate": 2e-5,
+        "save_steps": 200,
+        "eval_steps": 200,
+        "eval_strategy": "steps",
+        "save_total_limit": 2,
+        "learning_rate": 3e-5,
         "weight_decay": 1e-4,
-        "gradient_accumulation_steps": 512,
+        "gradient_accumulation_steps": 1,
+        "eval_accumulation_steps": 16,
+        "batch_eval_metrics": True,
         "gradient_checkpointing": False,
         "save_only_model": True,
         "report_to": "wandb",
@@ -103,24 +106,13 @@ def train_model(
     wandb.init(
         project="PersonalLora",
         config=config,
-        name="-{}".format(
-            os.path.basename(model_path), datetime.now().strftime("%Y-%m-%d")
+        name="{}-{}".format(
+            os.path.basename(model_path.rstrip("/")),
+            datetime.now().strftime("%Y-%m-%d"),
         ),
     )
 
     model, tokenizer = load_mt(model_path, tokenizer_path=tokenizer_path)
-
-    peft_config = LoraConfig(
-        r=4,
-        lora_alpha=16,
-        target_modules=["q_proj", "v_proj"],
-        lora_dropout=0.1,
-        task_type="CAUSAL_LM",
-    )
-    custom_module_mapping = {nn.Linear: partial(LoraLinear, num_users=10000)}
-    peft_config._register_custom_module(custom_module_mapping)
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
 
     use_dataset_cache = True
 
@@ -138,8 +130,9 @@ def train_model(
                 tokenizer, max_length=model.config.max_position_embeddings
             ),
             batched=True,
-            num_proc=4,
+            num_proc=16,
             remove_columns=ds.column_names,
+            load_from_cache_file=False,
         )
         return ds
 
@@ -149,6 +142,20 @@ def train_model(
     else:
         eval_ds = None
 
+    peft_config = LoraConfig(
+        r=4,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.1,
+        task_type="CAUSAL_LM",
+    )
+    custom_module_mapping = {
+        nn.Linear: partial(LoraLinear, num_users=6050, num_items=4000)
+    }
+    peft_config._register_custom_module(custom_module_mapping)
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+
     training_args = TrainingArguments(**config)
     trainer = CustomTrainer(
         model=model,
@@ -157,6 +164,7 @@ def train_model(
         eval_dataset=eval_ds,
         data_collator=DataCollatorForMovielensTextLM(tokenizer),
         compute_metrics=MovieLensAccuracy(tokenizer).compute_metrics,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
     tokenizer.save_pretrained(os.path.join(output_dir, "tokenizer"))
     trainer.train()

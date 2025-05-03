@@ -91,6 +91,7 @@ class LoraLayer(BaseTunerLayer):
         base_layer: nn.Module,
         ephemeral_gpu_offload: bool = False,
         num_users=1,
+        num_items=1,
         **kwargs,
     ) -> None:
         self.base_layer = base_layer
@@ -101,6 +102,7 @@ class LoraLayer(BaseTunerLayer):
         self.lora_A = nn.ModuleDict({})
         self.lora_B = nn.ModuleDict({})
         self.num_users = num_users
+        self.num_items = num_items
         self.cur_user_index = 0
         # For Embedding layer
         self.lora_embedding_A = nn.ParameterDict({})
@@ -178,26 +180,21 @@ class LoraLayer(BaseTunerLayer):
         self.in_features = in_features
         self.out_features = out_features
 
-    def set_user_index(self, user_index: int) -> None:
-        """
-        Set the user index for the current forward pass.
-
-        Args:
-            user_index (`int`):
-                The user index to set.
-        """
-        if user_index >= self.num_users or user_index < 0:
-            raise ValueError(
-                f"`user_index` should be in the range [0, {self.num_users}), but got {user_index}."
-            )
-        self.cur_user_index = user_index
-        for active_adapter in self.active_adapters:
-            if active_adapter in self.lora_B.keys():
-                for i, lora_B in enumerate(self.lora_B[active_adapter]):
-                    if i != user_index:
-                        lora_B.weight.requires_grad = False
-                    else:
-                        lora_B.weight.requires_grad = True
+    def set_indices(self, user_indices: list[int], item_indices: list[int]) -> None:
+        self.user_indices = user_indices
+        self.item_indices = item_indices
+        # if user_indices >= self.num_users or user_indices < 0:
+        #     raise ValueError(
+        #         f"`user_indices` should be in the range [0, {self.num_users}), but got {user_indices}."
+        #     )
+        # self.cur_user_index = user_indices
+        # for active_adapter in self.active_adapters:
+        #     if active_adapter in self.lora_B.keys():
+        #         for i, lora_B in enumerate(self.lora_B[active_adapter]):
+        #             if i != user_indices:
+        #                 lora_B.weight.requires_grad = False
+        #             else:
+        #                 lora_B.weight.requires_grad = True
 
     def update_layer(
         self,
@@ -226,11 +223,56 @@ class LoraLayer(BaseTunerLayer):
         self.lora_dropout.update(nn.ModuleDict({adapter_name: lora_dropout_layer}))
         # Actual trainable parameters
         self.lora_A[adapter_name] = nn.Linear(self.in_features, r, bias=False)
-        self.lora_B[adapter_name] = nn.ModuleList(
-            [
-                nn.Linear(r, self.out_features, bias=lora_bias)
-                for _ in range(self.num_users)
-            ]
+        self.lora_B[adapter_name] = nn.ModuleDict(
+            {
+                "user": nn.ParameterDict(
+                    {
+                        "weight": nn.Parameter(
+                            torch.zeros(
+                                self.num_users,
+                                self.out_features,
+                                r,
+                                dtype=torch.float32,
+                            )
+                        ),
+                        "bias": (
+                            nn.Parameter(
+                                torch.zeros(
+                                    self.num_users,
+                                    self.out_features,
+                                    dtype=torch.float32,
+                                )
+                            )
+                            if lora_bias
+                            else None
+                        ),
+                    }
+                ),
+                "item": nn.ParameterDict(
+                    {
+                        "weight": nn.Parameter(
+                            torch.zeros(
+                                self.num_items,
+                                self.out_features,
+                                r,
+                                dtype=torch.float32,
+                            )
+                        ),
+                        "bias": (
+                            nn.Parameter(
+                                torch.zeros(
+                                    self.num_items,
+                                    self.out_features,
+                                    dtype=torch.float32,
+                                )
+                            )
+                            if lora_bias
+                            else None
+                        ),
+                    }
+                ),
+                "common": nn.Linear(r, self.out_features, bias=lora_bias),
+            }
         )
         self.lora_bias[adapter_name] = lora_bias
 
@@ -266,10 +308,8 @@ class LoraLayer(BaseTunerLayer):
                 )
             else:
                 raise ValueError(f"Unknown initialization {init_lora_weights=}")
-            for l in self.lora_B[adapter_name]:
-                nn.init.zeros_(l.weight)
-                if self.lora_bias[adapter_name]:
-                    nn.init.zeros_(l.bias)
+            for name, param in self.lora_B[adapter_name].named_parameters():
+                nn.init.zeros_(param)
         if adapter_name in self.lora_embedding_A.keys():
             # Initialize A to zeros and B the same way as the default for nn.Embedding, see:
             # https://github.com/microsoft/LoRA/blob/4c0333854cb905966f8cc4e9a74068c1e507c7b7/loralib/layers.py#L59-L60
@@ -341,39 +381,39 @@ class LoraLayer(BaseTunerLayer):
                 msg = "Cannot pass `adapter_names` when DoRA is enabled."
                 raise ValueError(msg)
 
-    def _mixed_batch_forward(
-        self, x: torch.Tensor, *args: Any, adapter_names: list[str], **kwargs: Any
-    ) -> torch.Tensor:
-        # This is a special method that handles the case when users pass the argument `adapter_names`. This is an
-        # extra argument that allows mixing different adapters in the same batch at inference time.
-        result = self.base_layer(x, *args, **kwargs)
-        torch_result_dtype = result.dtype
+    # def _mixed_batch_forward(
+    #     self, x: torch.Tensor, *args: Any, adapter_names: list[str], **kwargs: Any
+    # ) -> torch.Tensor:
+    #     # This is a special method that handles the case when users pass the argument `adapter_names`. This is an
+    #     # extra argument that allows mixing different adapters in the same batch at inference time.
+    #     result = self.base_layer(x, *args, **kwargs)
+    #     torch_result_dtype = result.dtype
 
-        unique_adapters = set(adapter_names)
-        sub_batch_indices_list = []
-        for adapter in unique_adapters:
-            sub_batch_indices_list.append(
-                [index for index, item in enumerate(adapter_names) if item == adapter]
-            )
+    #     unique_adapters = set(adapter_names)
+    #     sub_batch_indices_list = []
+    #     for adapter in unique_adapters:
+    #         sub_batch_indices_list.append(
+    #             [index for index, item in enumerate(adapter_names) if item == adapter]
+    #         )
 
-        for i, active_adapter in enumerate(unique_adapters):
-            if active_adapter == "__base__":
-                continue
-            if active_adapter not in self.lora_A.keys():
-                continue
+    #     for i, active_adapter in enumerate(unique_adapters):
+    #         if active_adapter == "__base__":
+    #             continue
+    #         if active_adapter not in self.lora_A.keys():
+    #             continue
 
-            lora_A = self.lora_A[active_adapter]
-            lora_B = self.lora_B[active_adapter][self.cur_user_index]
-            dropout = self.lora_dropout[active_adapter]
-            scaling = self.scaling[active_adapter]
+    #         lora_A = self.lora_A[active_adapter]
+    #         lora_B = self.lora_B[active_adapter][self.cur_user_index]
+    #         dropout = self.lora_dropout[active_adapter]
+    #         scaling = self.scaling[active_adapter]
 
-            # getting the sub-batch, passing it to LoRA layers and updating the corresponding indices of the linear
-            # layer output
-            sub_batch = x[sub_batch_indices_list[i]].to(lora_A.weight.dtype)
-            lora_output = lora_B(lora_A(dropout(sub_batch))) * scaling
-            result[sub_batch_indices_list[i]] += lora_output.to(torch_result_dtype)
+    #         # getting the sub-batch, passing it to LoRA layers and updating the corresponding indices of the linear
+    #         # layer output
+    #         sub_batch = x[sub_batch_indices_list[i]].to(lora_A.weight.dtype)
+    #         lora_output = lora_B(lora_A(dropout(sub_batch))) * scaling
+    #         result[sub_batch_indices_list[i]] += lora_output.to(torch_result_dtype)
 
-        return result
+    #     return result
 
 
 class LoraLinear(nn.Module, LoraLayer):
@@ -563,6 +603,7 @@ class LoraLinear(nn.Module, LoraLayer):
             adapter (str):
                 The name of the adapter for which the delta weight should be computed.
         """
+        raise NotImplementedError()
         device = self.lora_B[adapter][self.cur_user_index].weight.device
         dtype = self.lora_B[adapter][self.cur_user_index].weight.dtype
 
@@ -602,6 +643,9 @@ class LoraLinear(nn.Module, LoraLayer):
                 self.unmerge()
             result = self.base_layer(x, *args, **kwargs)
         elif adapter_names is not None:
+            raise NotImplementedError(
+                "Mixed batch forward is not supported yet. Please use the `adapter_names` argument in the forward method."
+            )
             result = self._mixed_batch_forward(
                 x, *args, adapter_names=adapter_names, **kwargs
             )
@@ -614,14 +658,42 @@ class LoraLinear(nn.Module, LoraLayer):
                 if active_adapter not in self.lora_A.keys():
                     continue
                 lora_A = self.lora_A[active_adapter]
-                lora_B = self.lora_B[active_adapter][self.cur_user_index]
+                # lora_B = self.lora_B[active_adapter][self.cur_user_index]
                 dropout = self.lora_dropout[active_adapter]
                 scaling = self.scaling[active_adapter]
                 x = x.to(lora_A.weight.dtype)
 
                 if not self.use_dora[active_adapter]:
-                    result = result + lora_B(lora_A(dropout(x))) * scaling
+                    lora_B_input = lora_A(dropout(x))
+                    assert (
+                        len(self.user_indices) == len(self.item_indices)
+                        and len(self.item_indices) == lora_B_input.shape[0]
+                    )
+                    lora_B_output = 0
+                    for k in self.lora_B[active_adapter].keys():
+                        if k == "user":
+                            indices = self.user_indices
+                        elif k == "item":
+                            indices = self.item_indices
+                        elif k == "common":
+                            l = self.lora_B[active_adapter][k]
+                            lora_B_output = lora_B_output + l(lora_B_input)
+                            continue
+                        indices = torch.tensor(
+                            indices, dtype=torch.long, device=lora_B_input.device
+                        )
+                        weight = self.lora_B[active_adapter][k]["weight"][indices]
+                        bias = (
+                            self.lora_B[active_adapter][k]["bias"][indices]
+                            if self.lora_B[active_adapter][k]["bias"] is not None
+                            else 0
+                        )
+                        lora_B_output = lora_B_output + (
+                            torch.matmul(lora_B_input, weight.transpose(1, 2)) + bias
+                        )
+                    result = result + lora_B_output * scaling
                 else:
+                    raise NotImplementedError()
                     if isinstance(dropout, nn.Identity) or not self.training:
                         base_result = result
                     else:

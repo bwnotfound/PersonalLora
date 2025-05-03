@@ -70,10 +70,12 @@ class DataCollatorForMovielensTextLM:
             input_ids = features["input_ids"]
             labels = features["labels"]
             user_indices = features["user_indices"]
+            item_indices = features["item_indices"]
         else:
             input_ids = [_["input_ids"][-self.max_length :] for _ in features]
             labels = [_["labels"][-self.max_length :] for _ in features]
             user_indices = [_["user_indices"] for _ in features]
+            item_indices = [_["item_indices"] for _ in features]
         batch = self.tokenizer.pad(
             {"input_ids": input_ids},
             padding=self.padding,
@@ -90,6 +92,7 @@ class DataCollatorForMovielensTextLM:
         )["input_ids"]
         batch["labels"][batch["labels"] == self.tokenizer.pad_token_id] = -100
         batch["user_indices"] = torch.tensor(user_indices, dtype=torch.long)
+        batch["item_indices"] = torch.tensor(item_indices, dtype=torch.long)
 
         return batch
 
@@ -117,30 +120,33 @@ class CLMBleu:
 @dataclass
 class MovieLensAccuracy:
     tokenizer: PreTrainedTokenizerBase
-    logits: bool = field(default=True)
 
-    def compute_metrics(self, eval_pred):
-        preds, refs = eval_pred
-        if self.logits:
-            preds = np.argmax(preds, axis=-1)
-            preds[refs == -100] = self.tokenizer.eos_token_id
-        preds[preds == self.tokenizer.pad_token_id] = self.tokenizer.eos_token_id
-        refs[refs == -100] = self.tokenizer.eos_token_id
-        preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True)
-        refs = self.tokenizer.batch_decode(refs, skip_special_tokens=True)
-        pattern = r"<answer>([0-5]+)</answer>"
+    def compute_metrics(self, eval_pred, compute_result=None):
+        preds, refs = eval_pred.predictions, eval_pred.label_ids
+        if len(preds.shape) != len(refs.shape):
+            logits_preds = preds
+            preds = preds.argmax(-1)
+            # preds[refs == -100] = self.tokenizer.eos_token_id
+        preds, refs = preds[:, -1], refs[:, -1]
+        # preds[preds == self.tokenizer.pad_token_id] = self.tokenizer.eos_token_id
+        # refs[refs == -100] = self.tokenizer.eos_token_id
+        # preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True)
+        # refs = self.tokenizer.batch_decode(refs, skip_special_tokens=True)
+        # pattern = r"<answer>([0-5]+)"
         acc, total = 0, 0
-        for pred, ref in zip(preds, refs):
-            m = re.match(pattern, ref)
-            if m is None:
-                raise ValueError(f"Invalid reference format: {ref}")
-            ref = m.group(1)
-            m = re.match(pattern, pred)
-            if m is not None:
-                pred = m.group(1)
-                if pred == ref:
-                    acc += 1
-            total += 1
+        # for pred, ref in zip(preds, refs):
+        # assert ref in [str(x) for x in range(6)]
+        # m = re.match(pattern, ref)
+        # if m is None:
+        #     raise ValueError(f"Invalid reference format: {ref}")
+        # ref = m.group(1)
+        # m = re.match(pattern, pred)
+        # if m is not None:
+        #     pred = m.group(1)
+        #     if pred == ref:
+        #         acc += 1
+        acc += (preds == refs).sum().item()
+        total += preds.shape[0]
         return {"accuracy": acc / total if total > 0 else 0}
 
 
@@ -209,24 +215,25 @@ class MovielensTextFormat:
         responses = examples["response"]
         input_ids = []
         labels = []
-        for prompt, response in zip(prompts, responses):
-            prompt_ids = self.tokenizer(
-                prompt, truncation=True, max_length=self.max_length
-            )["input_ids"]
-            response_ids = self.tokenizer(
-                response, truncation=True, max_length=self.max_length
-            )["input_ids"]
+        prompt_ids_list = self.tokenizer(
+            prompts, truncation=True, max_length=self.max_length
+        )["input_ids"]
+        response_ids_list = self.tokenizer(
+            responses, truncation=True, max_length=self.max_length
+        )["input_ids"]
+        for prompt_ids, response_ids in zip(prompt_ids_list, response_ids_list):
             if len(prompt_ids) + len(response_ids) > self.max_length:
                 raise ValueError(
                     f"Prompt and response combined length exceeds max_length: {len(prompt_ids) + len(response_ids)} > {self.max_length}"
                 )
-            input_ids.append(prompt_ids + response_ids)
-            labels.append([-100] * len(prompt_ids) + response_ids)
+            input_ids.append(prompt_ids)
+            labels.append([-100] * (len(prompt_ids) - 1) + response_ids)
 
         return {
             "input_ids": input_ids,
             "labels": labels,
             "user_indices": [int(x) for x in examples["user_index"]],
+            "item_indices": [int(x) for x in examples["item_index"]],
         }
 
 
@@ -242,3 +249,12 @@ def compute_loss_func(model_output, labels, **kwargs):
         logits.view(-1, logits.size(-1)), labels.view(-1)
     )
     return loss
+
+
+def preprocess_logits_for_metrics(logits, labels):
+    """
+    Original Trainer may have a memory leak.
+    This is a workaround to avoid storing too many tensors that are not needed.
+    """
+    pred_ids = torch.argmax(logits, dim=-1)
+    return pred_ids

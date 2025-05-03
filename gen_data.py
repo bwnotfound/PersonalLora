@@ -217,11 +217,14 @@ def generate_movielens_llm_dataset():
     # 文件路径设置
     data_dir = "data/raw/ml-1m"
     file_suffix = ".dat"
-    eval_ratio = 0.1
+    eval_ratio = 0.005
 
     users_file = os.path.join(data_dir, f"users{file_suffix}")
     movies_file = os.path.join(data_dir, f"movies{file_suffix}")
     ratings_file = os.path.join(data_dir, f"ratings{file_suffix}")
+
+    user_num = -1
+    # user_num = 1000
 
     # 定义 occupation 映射
     occupation_map = {
@@ -267,6 +270,8 @@ def generate_movielens_llm_dataset():
             if len(parts) != 5:
                 continue
             user_id = int(parts[0])
+            if user_num != -1 and user_id + 1 > user_num:
+                continue
             gender_raw = parts[1]
             # gender 保持原始表示，但转换为完整字符串
             gender = "male" if gender_raw == "M" else "female"
@@ -307,6 +312,9 @@ def generate_movielens_llm_dataset():
         movie_id = int(parts[1])
         rating = int(parts[2])
 
+        if user_num != -1 and user_id + 1 > user_num:
+            continue
+
         # 获取用户和电影信息
         user_info = users.get(user_id)
         movie_info = movies.get(movie_id)
@@ -325,14 +333,21 @@ def generate_movielens_llm_dataset():
         prompt = json.dumps(prompt_dict, ensure_ascii=False) + ", predict the rating:"
 
         # 构造 response
-        response = f"<answer>{rating}</answer><|im_end|>"
+        response = f"{rating}"
 
         data_rows.append(
-            {"user_index": int(user_id), "prompt": prompt, "response": response}
+            {
+                "user_index": int(user_id),
+                "item_index": int(movie_id),
+                "prompt": prompt,
+                "response": response,
+            }
         )
 
     # 转换为 DataFrame 并保存为 parquet 文件
-    df = pd.DataFrame(data_rows, columns=["user_index", "prompt", "response"])
+    df = pd.DataFrame(
+        data_rows, columns=["user_index", "item_index", "prompt", "response"]
+    )
     train_df = df.sample(frac=1 - eval_ratio)
     eval_df = df.drop(train_df.index)
     train_df.reset_index(drop=True, inplace=True)
