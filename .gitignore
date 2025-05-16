@@ -2,6 +2,6 @@ __pycache__/
 .vscode
 wandb*
 /data
-test.txt
+/test*
 /output
 /pack*

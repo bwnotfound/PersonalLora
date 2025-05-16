@@ -61,8 +61,8 @@ class RatingDataset(Dataset):
         }
 
 
-train_loader = DataLoader(RatingDataset(train_df), batch_size=256, shuffle=True)
-val_loader = DataLoader(RatingDataset(val_df), batch_size=256, shuffle=False)
+train_loader = DataLoader(RatingDataset(train_df), batch_size=512, shuffle=True)
+val_loader = DataLoader(RatingDataset(val_df), batch_size=512, shuffle=False)
 
 
 # 4. 定义 NeuralCF 模型
@@ -97,52 +97,52 @@ def rmse(preds, targets):
     return torch.sqrt(((preds - targets) ** 2).mean())
 
 
-for epoch in range(1, 11):
-    model.train()
-    t_bar = tqdm(train_loader)
-    loss_reocder = NumberRecoder()
-    for batch in t_bar:
-        u = batch["user"].to(device)
-        i = batch["item"].to(device)
-        r = batch["rating"].to(device)
-        pred = model(u, i)
-        loss = criterion(pred, r)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        loss_reocder.update(loss.item())
-        t_bar.set_description(f"Epoch {epoch:02d} - Loss: {loss_reocder.average:.4f}")
-    t_bar.close()
-    # 验证
-    model.eval()
-    with torch.no_grad():
-        all_pred, all_r = [], []
-        for batch in tqdm(val_loader):
-            u = batch["user"].to(device)
-            i = batch["item"].to(device)
-            r = batch["rating"].to(device)
-            p = model(u, i)
-            all_pred.append(p.cpu())
-            all_r.append(r.cpu())
-        all_pred = torch.cat(all_pred)
-        all_r = torch.cat(all_r)
-        # confusion = confusion_matrix(all_r.numpy(), all_pred.numpy())
-        # acc = confusion.diagonal().sum() / confusion.sum()
-        # 将连续预测值转换为离散类别
-        y_pred = np.rint(all_pred.numpy()).astype(int)
-        y_pred = np.clip(y_pred, 1, 5)
-        y_true = all_r.numpy().astype(int)
+# for epoch in range(1, 11):
+#     model.train()
+#     t_bar = tqdm(train_loader)
+#     loss_reocder = NumberRecoder()
+#     for batch in t_bar:
+#         u = batch["user"].to(device)
+#         i = batch["item"].to(device)
+#         r = batch["rating"].to(device)
+#         pred = model(u, i)
+#         loss = criterion(pred, r)
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
+#         loss_reocder.update(loss.item())
+#         t_bar.set_description(f"Epoch {epoch:02d} - Loss: {loss_reocder.average:.4f}")
+#     t_bar.close()
+#     # 验证
+#     model.eval()
+#     with torch.no_grad():
+#         all_pred, all_r = [], []
+#         for batch in tqdm(val_loader):
+#             u = batch["user"].to(device)
+#             i = batch["item"].to(device)
+#             r = batch["rating"].to(device)
+#             p = model(u, i)
+#             all_pred.append(p.cpu())
+#             all_r.append(r.cpu())
+#         all_pred = torch.cat(all_pred)
+#         all_r = torch.cat(all_r)
+#         # confusion = confusion_matrix(all_r.numpy(), all_pred.numpy())
+#         # acc = confusion.diagonal().sum() / confusion.sum()
+#         # 将连续预测值转换为离散类别
+#         y_pred = np.rint(all_pred.numpy()).astype(int)
+#         y_pred = np.clip(y_pred, 1, 5)
+#         y_true = all_r.numpy().astype(int)
 
-        # 计算混淆矩阵
-        confusion = confusion_matrix(y_true, y_pred, labels=list(range(1, 5 + 1)))
-        acc = np.trace(confusion) / confusion.sum()
-        print(
-            f"Epoch {epoch:02d} - Acc: {acc*100:.2f}% - Confusion Matrix:\n{confusion}"
-        )
-        val_rmse = rmse(all_pred, all_r)
-    print(
-        f"Epoch {epoch:02d} - Train Loss: {loss_reocder.average:.4f}, Val RMSE: {val_rmse:.4f}"
-    )
+#         # 计算混淆矩阵
+#         confusion = confusion_matrix(y_true, y_pred, labels=list(range(1, 5 + 1)))
+#         acc = np.trace(confusion) / confusion.sum()
+#         print(
+#             f"Epoch {epoch:02d} - Acc: {acc*100:.2f}% - Confusion Matrix:\n{confusion}"
+#         )
+#         val_rmse = rmse(all_pred, all_r)
+#     print(
+#         f"Epoch {epoch:02d} - Train Loss: {loss_reocder.average:.4f}, Val RMSE: {val_rmse:.4f}"
+#     )
 
 # 6. 单例预测示例
 # 选取 DataFrame 中第一个样本
@@ -150,6 +150,9 @@ sample = val_df.iloc[0]
 u_idx = torch.tensor(sample["user"]).to(device)
 i_idx = torch.tensor(sample["item"]).to(device)
 model.eval()
+from bwtools.log import TimeCounter
 with torch.no_grad():
     pred_rating = model(u_idx.unsqueeze(0), i_idx.unsqueeze(0)).item()
+    with TimeCounter():
+        pred_rating = model(u_idx.unsqueeze(0), i_idx.unsqueeze(0)).item()
 print(f"真实评分: {sample['rating']:.1f}, 预测评分: {pred_rating:.4f}")

@@ -274,6 +274,7 @@ class LoraLayer(BaseTunerLayer):
                 "common": nn.Linear(r, self.out_features, bias=lora_bias),
             }
         )
+        self.lora_B[adapter_name]["common"].weight.data.zero_()
         self.lora_bias[adapter_name] = lora_bias
 
         if use_rslora:

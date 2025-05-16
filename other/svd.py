@@ -11,7 +11,7 @@
 '''
 准确率 44.77%
 '''
-
+from bwtools.log import TimeCounter
 from surprise import Dataset, Reader, SVD, accuracy
 from surprise.model_selection import cross_validate, train_test_split
 import numpy as np
@@ -52,3 +52,5 @@ print(f"Test Accuracy: {accuracy_score:.4f}")
 # 6. 单例预测示例
 uid, iid = str(196), str(302)  # 用户 ID 和 电影 ID 必须是字符串
 pred = algo.predict(uid, iid, r_ui=4.0, verbose=True)
+with TimeCounter():
+    pred = algo.predict(uid, iid, r_ui=4.0, verbose=True)

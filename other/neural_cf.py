@@ -112,6 +112,9 @@ sample = val_df.iloc[0]
 u_idx = torch.tensor(sample["user"]).to(device)
 i_idx = torch.tensor(sample["item"]).to(device)
 model.eval()
+from bwtools.log import TimeCounter
 with torch.no_grad():
     pr = model(u_idx.unsqueeze(0), i_idx.unsqueeze(0)).item()
+    with TimeCounter():
+        pr = model(u_idx.unsqueeze(0), i_idx.unsqueeze(0)).item()
 print(f"真实: {sample['rating']:.1f}, 预测: {pr:.4f}")

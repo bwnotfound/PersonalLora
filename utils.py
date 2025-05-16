@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-import re
 from typing import Union, Optional, List, Dict, Any
 from transformers import PreTrainedTokenizerBase
 from transformers.utils import PaddingStrategy
@@ -26,6 +25,7 @@ class DataCollatorForSessionLM:
         batch = self.tokenizer.pad(
             {"input_ids": input_ids},
             padding=self.padding,
+            padding_side="left",
             max_length=self.max_length,
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors=self.return_tensors,
@@ -33,27 +33,12 @@ class DataCollatorForSessionLM:
         batch["labels"] = self.tokenizer.pad(
             {"input_ids": labels},
             padding=self.padding,
+            padding_side="left",
             max_length=self.max_length,
             pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors=self.return_tensors,
         )["input_ids"]
-        batch["input_ids"][
-            batch["input_ids"] == self.tokenizer.pad_token_id
-        ] = self.tokenizer.eos_token_id
         batch["labels"][batch["labels"] == self.tokenizer.pad_token_id] = -100
-        # with open("test.txt", "w", encoding="utf-8") as f:
-        #     inp = self.tokenizer.decode(batch['input_ids'][0]).replace(
-        #         self.tokenizer.eos_token, "|"
-        #     )
-        #     pos = [False if x != -100 else True for x in batch['labels'][0]]
-        #     labels = self.tokenizer.decode(
-        #         [
-        #             x if x != -100 else self.tokenizer.eos_token_id
-        #             for x in batch['labels'][0]
-        #         ]
-        #     ).replace(self.tokenizer.eos_token, "|")
-        #     f.write(f"{inp}\n{'-' * 50}\n{labels}")
-        # exit()
         return batch
 
 
@@ -127,7 +112,8 @@ class MovieLensAccuracy:
             logits_preds = preds
             preds = preds.argmax(-1)
             # preds[refs == -100] = self.tokenizer.eos_token_id
-        preds, refs = preds[:, -1], refs[:, -1]
+        assert preds.shape == refs.shape, f"{preds.shape} != {refs.shape}"
+        preds, refs = preds[:, :-1], refs[:, 1:]
         # preds[preds == self.tokenizer.pad_token_id] = self.tokenizer.eos_token_id
         # refs[refs == -100] = self.tokenizer.eos_token_id
         # preds = self.tokenizer.batch_decode(preds, skip_special_tokens=True)
@@ -145,7 +131,7 @@ class MovieLensAccuracy:
         #     pred = m.group(1)
         #     if pred == ref:
         #         acc += 1
-        acc += (preds == refs).sum().item()
+        acc += ((preds == refs) * (refs != -100)).sum().item()
         total += preds.shape[0]
         return {"accuracy": acc / total if total > 0 else 0}
 
@@ -226,8 +212,8 @@ class MovielensTextFormat:
                 raise ValueError(
                     f"Prompt and response combined length exceeds max_length: {len(prompt_ids) + len(response_ids)} > {self.max_length}"
                 )
-            input_ids.append(prompt_ids)
-            labels.append([-100] * (len(prompt_ids) - 1) + response_ids)
+            input_ids.append(prompt_ids + response_ids)
+            labels.append([-100] * len(prompt_ids) + response_ids)
 
         return {
             "input_ids": input_ids,

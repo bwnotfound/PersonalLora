@@ -217,7 +217,10 @@ def generate_movielens_llm_dataset():
     # 文件路径设置
     data_dir = "data/raw/ml-1m"
     file_suffix = ".dat"
-    eval_ratio = 0.005
+    split_str = "::"
+    eval_ratio = 0.1
+    save_user = -1
+    # save_user = 1000
 
     users_file = os.path.join(data_dir, f"users{file_suffix}")
     movies_file = os.path.join(data_dir, f"movies{file_suffix}")
@@ -266,7 +269,7 @@ def generate_movielens_llm_dataset():
     users = {}
     with open(users_file, "r", encoding="utf-8") as f:
         for line in f:
-            parts = line.strip().split("::")
+            parts = line.strip().split(split_str)
             if len(parts) != 5:
                 continue
             user_id = int(parts[0])
@@ -289,7 +292,7 @@ def generate_movielens_llm_dataset():
     movies = {}
     with open(movies_file, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
-            parts = line.strip().split("::")
+            parts = line.strip().split(split_str)
             if len(parts) < 3:
                 continue
             movie_id = int(parts[0])
@@ -305,10 +308,12 @@ def generate_movielens_llm_dataset():
     with open(ratings_file, "r", encoding="utf-8") as f:
         lines = f.readlines()
     for line in tqdm(lines, desc="Processing ratings"):
-        parts = line.strip().split("::")
+        parts = line.strip().split(split_str)
         if len(parts) != 4:
             continue
         user_id = int(parts[0])
+        if save_user > 0 and user_id >= save_user:
+            continue
         movie_id = int(parts[1])
         rating = int(parts[2])
 
@@ -348,6 +353,7 @@ def generate_movielens_llm_dataset():
     df = pd.DataFrame(
         data_rows, columns=["user_index", "item_index", "prompt", "response"]
     )
+    df = df.sample(frac=1).reset_index(drop=True)
     train_df = df.sample(frac=1 - eval_ratio)
     eval_df = df.drop(train_df.index)
     train_df.reset_index(drop=True, inplace=True)
